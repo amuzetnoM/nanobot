@@ -361,15 +361,22 @@ class TestNanobot:
         assert not result.ok
 
     def test_destruct_policy_default_off(self):
-        bot = Nanobot("ops", "health")
+        # A bot with no space.yaml destruct default should be "off"
+        bot = Nanobot("fake_space_no_yaml", "no_bot")
         assert bot.destruct_policy == "off"
+
+    def test_destruct_policy_from_space_yaml(self):
+        # ops/health has destruct: auto in space.yaml
+        bot = Nanobot("ops", "health")
+        assert bot.destruct_policy == "auto"
 
     def test_destruct_policy_explicit(self):
         bot = Nanobot("ops", "health", destruct_policy="auto")
         assert bot.destruct_policy == "auto"
 
     def test_self_destruct_implies_policy_on(self):
-        bot = Nanobot("ops", "health", self_destruct=True)
+        # self_destruct=True on a bot with no yaml default → "on"
+        bot = Nanobot("fake_space_no_yaml", "no_bot", self_destruct=True)
         assert bot.destruct_policy == "on"
 
     def test_explicit_policy_overrides_self_destruct(self):
