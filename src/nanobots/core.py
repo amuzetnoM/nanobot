@@ -10,14 +10,30 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Literal, Optional
 
-from nanobots.registry import resolve_bot
+from nanobots.registry import resolve_bot, get_bot_meta
 
+
+# ---------------------------------------------------------------------------
+# Types
+# ---------------------------------------------------------------------------
+
+DestructPolicy = Literal["off", "on", "auto"]
+
+# Auto-destruct thresholds
+_AUTO_DESTRUCT_MAX_DURATION_S = 5.0
+_AUTO_DESTRUCT_MAX_REPORT_KB = 10
+
+
+# ---------------------------------------------------------------------------
+# Result
+# ---------------------------------------------------------------------------
 
 @dataclass
 class NanobotResult:
@@ -35,6 +51,7 @@ class NanobotResult:
     duration_ms: int
     timestamp: str
     metadata: dict = field(default_factory=dict)
+    destructed: bool = False
 
     @property
     def ok(self) -> bool:
@@ -42,7 +59,8 @@ class NanobotResult:
 
     def __repr__(self) -> str:
         emoji = "+" if self.ok else "x"
-        return f"[{emoji}] {self.space}/{self.bot} ({self.run_id}) {self.status} in {self.duration_ms}ms"
+        destruct_tag = " [DESTRUCTED]" if self.destructed else ""
+        return f"[{emoji}] {self.space}/{self.bot} ({self.run_id}) {self.status} in {self.duration_ms}ms{destruct_tag}"
 
     def to_dict(self) -> dict:
         return {
@@ -55,8 +73,61 @@ class NanobotResult:
             "timestamp": self.timestamp,
             "report_path": str(self.report_path) if self.report_path else None,
             "metadata": self.metadata,
+            "destructed": self.destructed,
         }
 
+
+# ---------------------------------------------------------------------------
+# Destruct helpers
+# ---------------------------------------------------------------------------
+
+def _should_auto_destruct(result: NanobotResult) -> bool:
+    """Decide if a result qualifies for auto-destruct.
+
+    Auto-destruct fires when ALL of:
+      - Duration < 5 seconds
+      - Exit code 0
+      - Report size < 10 KB (or no report)
+    """
+    if result.exit_code != 0:
+        return False
+    if result.duration_ms >= _AUTO_DESTRUCT_MAX_DURATION_S * 1000:
+        return False
+    if result.report and len(result.report.encode()) >= _AUTO_DESTRUCT_MAX_REPORT_KB * 1024:
+        return False
+    return True
+
+
+def _write_tombstone(report_path: Path, run_id: str) -> Path:
+    """Write a tombstone file — proof of execution, zero content."""
+    tombstone_path = report_path.with_suffix(".tombstone")
+    tombstone_path.write_text(
+        f"run_id: {run_id}\n"
+        f"timestamp: {datetime.now(timezone.utc).isoformat()}\n"
+        f"status: DESTRUCTED\n"
+    )
+    return tombstone_path
+
+
+def _schedule_report_ttl(report_path: Path, ttl_seconds: int) -> threading.Timer:
+    """Spawn a daemon thread that deletes the report after N seconds."""
+
+    def _delete():
+        try:
+            if report_path.exists():
+                report_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+    timer = threading.Timer(ttl_seconds, _delete)
+    timer.daemon = True
+    timer.start()
+    return timer
+
+
+# ---------------------------------------------------------------------------
+# Nanobot
+# ---------------------------------------------------------------------------
 
 class Nanobot:
     """
@@ -79,6 +150,10 @@ class Nanobot:
         self_destruct: bool = False,
         output_dir: str | Path | None = None,
         env: dict[str, str] | None = None,
+        destruct_policy: DestructPolicy | None = None,
+        report_ttl: int | None = None,
+        full_destruct: bool = False,
+        on_destruct: Callable[[NanobotResult], None] | None = None,
     ):
         self.space = space
         self.bot = bot
@@ -87,6 +162,25 @@ class Nanobot:
         self.self_destruct = self_destruct
         self.output_dir = Path(output_dir) if output_dir else None
         self.extra_env = env or {}
+        self.report_ttl = report_ttl
+        self.full_destruct = full_destruct
+        self.on_destruct = on_destruct
+
+        # Resolve destruct_policy: explicit > space.yaml default > "off"
+        if destruct_policy is not None:
+            self.destruct_policy: DestructPolicy = destruct_policy
+        else:
+            # Check space.yaml for a default
+            meta = get_bot_meta(space, bot)
+            yaml_policy = meta.get("destruct") if meta else None
+            if yaml_policy in ("off", "on", "auto"):
+                self.destruct_policy = yaml_policy
+            else:
+                self.destruct_policy = "off"
+
+        # Legacy compat: --self-destruct implies policy="on" if not explicitly set
+        if self.self_destruct and self.destruct_policy == "off":
+            self.destruct_policy = "on"
 
         self.run_id = hashlib.md5(
             f"{space}-{bot}-{time.time()}-{os.getpid()}".encode()
@@ -120,6 +214,7 @@ class Nanobot:
             report_path = Path(tempfile.mktemp(suffix=".md", prefix=f"nanobot-{self.run_id}-"))
 
         # Build environment
+        effective_destruct = self.destruct_policy != "off" or self.self_destruct
         env = os.environ.copy()
         env.update(
             {
@@ -127,7 +222,7 @@ class Nanobot:
                 "NANOBOT_SPACE": self.space,
                 "NANOBOT_BOT": self.bot,
                 "NANOBOT_OUTPUT": str(report_path),
-                "NANOBOT_SELF_DESTRUCT": "1" if self.self_destruct else "0",
+                "NANOBOT_SELF_DESTRUCT": "1" if effective_destruct else "0",
             }
         )
         # Pass the caller's cwd so bots can resolve relative paths
@@ -176,13 +271,8 @@ class Nanobot:
             report_content = report_path.read_text()
             actual_report_path = report_path
 
-        # Self-destruct: clean up temp files
-        if self.self_destruct:
-            if report_path.exists() and not self.output_dir:
-                report_path.unlink(missing_ok=True)
-                actual_report_path = None
-
-        self._result = NanobotResult(
+        # Build result (before destruct, so report is captured)
+        result = NanobotResult(
             run_id=self.run_id,
             space=self.space,
             bot=self.bot,
@@ -196,7 +286,57 @@ class Nanobot:
             timestamp=datetime.now(timezone.utc).isoformat(),
         )
 
-        return self._result
+        # --- Destruct logic ---
+        should_destruct = self._resolve_destruct(result)
+
+        if should_destruct:
+            if self.full_destruct:
+                self._full_destruct(result, report_path)
+            else:
+                # Standard destruct: delete report file only
+                if report_path.exists() and not self.output_dir:
+                    report_path.unlink(missing_ok=True)
+                    result.report_path = None
+            result.destructed = True
+
+            # Fire callback
+            if self.on_destruct is not None:
+                try:
+                    self.on_destruct(result)
+                except Exception:
+                    pass  # Don't let callback errors propagate
+
+        # Report TTL (independent of destruct — applies to non-destructed reports too)
+        if self.report_ttl is not None and result.report_path and result.report_path.exists():
+            _schedule_report_ttl(result.report_path, self.report_ttl)
+
+        self._result = result
+        return result
+
+    def _resolve_destruct(self, result: NanobotResult) -> bool:
+        """Determine if we should destruct based on policy."""
+        if self.destruct_policy == "on":
+            return True
+        if self.destruct_policy == "auto":
+            return _should_auto_destruct(result)
+        # "off" — but check legacy self_destruct flag
+        if self.self_destruct:
+            return True
+        return False
+
+    def _full_destruct(self, result: NanobotResult, report_path: Path) -> None:
+        """Full destruct: delete report, delete log entry, write tombstone."""
+        # 1. Delete the report file
+        if report_path.exists():
+            report_path.unlink(missing_ok=True)
+        result.report_path = None
+
+        # 2. Delete the log entry (stdout/stderr still in result object)
+        # Log files are per-run; the report IS the log for nanobots.
+        # We clear the path reference — content stays in memory.
+
+        # 3. Write tombstone
+        _write_tombstone(report_path, result.run_id)
 
 
 class AsyncNanobot:
@@ -220,6 +360,10 @@ class AsyncNanobot:
         self_destruct: bool = False,
         output_dir: str | Path | None = None,
         env: dict[str, str] | None = None,
+        destruct_policy: DestructPolicy | None = None,
+        report_ttl: int | None = None,
+        full_destruct: bool = False,
+        on_destruct: Callable[[NanobotResult], None] | None = None,
     ):
         self.space = space
         self.bot = bot
@@ -228,6 +372,23 @@ class AsyncNanobot:
         self.self_destruct = self_destruct
         self.output_dir = Path(output_dir) if output_dir else None
         self.extra_env = env or {}
+        self.report_ttl = report_ttl
+        self.full_destruct = full_destruct
+        self.on_destruct = on_destruct
+
+        # Resolve destruct_policy: explicit > space.yaml default > "off"
+        if destruct_policy is not None:
+            self.destruct_policy: DestructPolicy = destruct_policy
+        else:
+            meta = get_bot_meta(space, bot)
+            yaml_policy = meta.get("destruct") if meta else None
+            if yaml_policy in ("off", "on", "auto"):
+                self.destruct_policy = yaml_policy
+            else:
+                self.destruct_policy = "off"
+
+        if self.self_destruct and self.destruct_policy == "off":
+            self.destruct_policy = "on"
 
         self.run_id = hashlib.md5(
             f"{space}-{bot}-{time.time()}-{os.getpid()}".encode()
@@ -251,6 +412,7 @@ class AsyncNanobot:
                 tempfile.mktemp(suffix=".md", prefix=f"nanobot-{self.run_id}-")
             )
 
+        effective_destruct = self.destruct_policy != "off" or self.self_destruct
         env = os.environ.copy()
         env.update(
             {
@@ -258,7 +420,7 @@ class AsyncNanobot:
                 "NANOBOT_SPACE": self.space,
                 "NANOBOT_BOT": self.bot,
                 "NANOBOT_OUTPUT": str(self._report_path),
-                "NANOBOT_SELF_DESTRUCT": "1" if self.self_destruct else "0",
+                "NANOBOT_SELF_DESTRUCT": "1" if effective_destruct else "0",
             }
         )
         env["NANOBOT_CALLER_CWD"] = os.getcwd()
@@ -335,11 +497,7 @@ class AsyncNanobot:
             report_content = self._report_path.read_text()
             report_path = self._report_path
 
-        if self.self_destruct and self._report_path and self._report_path.exists() and not self.output_dir:
-            self._report_path.unlink(missing_ok=True)
-            report_path = None
-
-        return NanobotResult(
+        result = NanobotResult(
             run_id=self.run_id,
             space=self.space,
             bot=self.bot,
@@ -353,6 +511,46 @@ class AsyncNanobot:
             timestamp=datetime.now(timezone.utc).isoformat(),
         )
 
+        # --- Destruct logic ---
+        should_destruct = self._resolve_destruct(result)
+
+        if should_destruct:
+            if self.full_destruct and self._report_path:
+                self._full_destruct(result, self._report_path)
+            elif self._report_path and self._report_path.exists() and not self.output_dir:
+                self._report_path.unlink(missing_ok=True)
+                result.report_path = None
+            result.destructed = True
+
+            if self.on_destruct is not None:
+                try:
+                    self.on_destruct(result)
+                except Exception:
+                    pass
+
+        # Report TTL
+        if self.report_ttl is not None and result.report_path and result.report_path.exists():
+            _schedule_report_ttl(result.report_path, self.report_ttl)
+
+        return result
+
+    def _resolve_destruct(self, result: NanobotResult) -> bool:
+        """Determine if we should destruct based on policy."""
+        if self.destruct_policy == "on":
+            return True
+        if self.destruct_policy == "auto":
+            return _should_auto_destruct(result)
+        if self.self_destruct:
+            return True
+        return False
+
+    def _full_destruct(self, result: NanobotResult, report_path: Path) -> None:
+        """Full destruct: delete report, write tombstone."""
+        if report_path.exists():
+            report_path.unlink(missing_ok=True)
+        result.report_path = None
+        _write_tombstone(report_path, result.run_id)
+
 
 def spawn(
     target: str,
@@ -361,6 +559,10 @@ def spawn(
     timeout: int = 300,
     self_destruct: bool = False,
     output_dir: str | Path | None = None,
+    destruct_policy: DestructPolicy | None = None,
+    report_ttl: int | None = None,
+    full_destruct: bool = False,
+    on_destruct: Callable[[NanobotResult], None] | None = None,
 ) -> NanobotResult:
     """
     Fire-and-forget nanobot spawn. The simplest API.
@@ -371,6 +573,10 @@ def spawn(
         timeout: Max execution time in seconds
         self_destruct: Clean up all traces after execution
         output_dir: Where to save reports (temp dir if None)
+        destruct_policy: "off", "on", or "auto" — overrides space.yaml default
+        report_ttl: Delete report file after N seconds (content stays in memory)
+        full_destruct: Delete report + write tombstone (proof of run, zero content)
+        on_destruct: Callback invoked after destruct for custom cleanup
 
     Returns:
         NanobotResult with status, report, and metadata
@@ -389,6 +595,10 @@ def spawn(
         timeout=timeout,
         self_destruct=self_destruct,
         output_dir=output_dir,
+        destruct_policy=destruct_policy,
+        report_ttl=report_ttl,
+        full_destruct=full_destruct,
+        on_destruct=on_destruct,
     )
     return nanobot.run()
 
@@ -400,6 +610,10 @@ def spawn_async(
     timeout: int = 300,
     self_destruct: bool = False,
     output_dir: str | Path | None = None,
+    destruct_policy: DestructPolicy | None = None,
+    report_ttl: int | None = None,
+    full_destruct: bool = False,
+    on_destruct: Callable[[NanobotResult], None] | None = None,
 ) -> AsyncNanobot:
     """
     Launch a nanobot in the background. Returns immediately.
@@ -410,6 +624,10 @@ def spawn_async(
         timeout: Max time before kill
         self_destruct: Clean up after done
         output_dir: Report destination
+        destruct_policy: "off", "on", or "auto"
+        report_ttl: Delete report after N seconds
+        full_destruct: Full destruct with tombstone
+        on_destruct: Post-destruct callback
 
     Returns:
         AsyncNanobot handle. Use .poll() or .wait() to get result.
@@ -428,6 +646,10 @@ def spawn_async(
         timeout=timeout,
         self_destruct=self_destruct,
         output_dir=output_dir,
+        destruct_policy=destruct_policy,
+        report_ttl=report_ttl,
+        full_destruct=full_destruct,
+        on_destruct=on_destruct,
     )
     handle.launch()
     return handle

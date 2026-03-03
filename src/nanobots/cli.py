@@ -42,7 +42,8 @@ def cmd_list(args):
         print(f"\n  {args.target}/\n")
         for bot in bots:
             desc = f"  {bot['description']}" if bot["description"] else ""
-            print(f"    {bot['name']:<20}{desc}")
+            destruct_tag = f"  [destruct: {bot['destruct']}]" if bot.get("destruct", "off") != "off" else ""
+            print(f"    {bot['name']:<20}{desc}{destruct_tag}")
         print()
     else:
         # List all spaces
@@ -72,6 +73,11 @@ def cmd_run(args):
 
     space, bot = target.split("/", 1)
 
+    # Determine destruct policy
+    destruct_policy = None
+    if args.auto_destruct:
+        destruct_policy = "auto"
+
     nanobot = Nanobot(
         space,
         bot,
@@ -79,6 +85,9 @@ def cmd_run(args):
         timeout=args.timeout,
         self_destruct=args.self_destruct,
         output_dir=args.output,
+        destruct_policy=destruct_policy,
+        report_ttl=args.report_ttl,
+        full_destruct=args.full_destruct,
     )
 
     result = nanobot.run()
@@ -87,7 +96,8 @@ def cmd_run(args):
         print(json.dumps(result.to_dict(), indent=2))
     else:
         status_icon = "OK" if result.ok else "FAIL"
-        print(f"\n  [{status_icon}] {result.space}/{result.bot} ({result.run_id})")
+        destruct_tag = " [DESTRUCTED]" if result.destructed else ""
+        print(f"\n  [{status_icon}] {result.space}/{result.bot} ({result.run_id}){destruct_tag}")
         print(f"  Duration: {result.duration_ms}ms")
 
         if result.report_path:
@@ -116,6 +126,9 @@ Examples:
   nanobot security/threat-radar         Run threat radar
   nanobot code/secrets /path/to/scan    Scan for leaked secrets
   nanobot ops/health --self-destruct    Run and clean up all traces
+  nanobot ops/health --full-destruct    Destruct with tombstone
+  nanobot ops/health --auto-destruct    Let the bot decide
+  nanobot ops/health --report-ttl 60    Delete report after 60s
   nanobot ops/health --json             Output result as JSON
 """,
     )
@@ -149,6 +162,26 @@ Examples:
         "--self-destruct", "-sd",
         action="store_true",
         help="Clean up all traces after execution",
+    )
+
+    parser.add_argument(
+        "--full-destruct",
+        action="store_true",
+        help="Full destruct: delete report, write tombstone (proof of run, zero content)",
+    )
+
+    parser.add_argument(
+        "--auto-destruct",
+        action="store_true",
+        help="Auto-destruct: let the bot decide based on task complexity",
+    )
+
+    parser.add_argument(
+        "--report-ttl",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Delete report file after N seconds (content stays in result)",
     )
 
     parser.add_argument(

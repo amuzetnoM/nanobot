@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "nanobots"
-version = "0.1.0"
+version = "0.1.1"
 description = "Fire-and-forget micro-agents for AI systems. Spawn, execute, self-destruct."
 readme = "README.md"
 license = "MIT"
@@ -43,10 +43,10 @@ dev = [
 nanobot = "nanobots.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/ArtifactVirtual/nanobots"
-Documentation = "https://github.com/ArtifactVirtual/nanobots#readme"
-Repository = "https://github.com/ArtifactVirtual/nanobots"
-Issues = "https://github.com/ArtifactVirtual/nanobots/issues"
+Homepage = "https://github.com/amuzetnoM/nanobot"
+Documentation = "https://github.com/amuzetnoM/nanobot#readme"
+Repository = "https://github.com/amuzetnoM/nanobot"
+Issues = "https://github.com/amuzetnoM/nanobot/issues"
 
 [tool.hatch.build.targets.sdist]
 include = ["/src/nanobots"]

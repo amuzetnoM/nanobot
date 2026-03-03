@@ -73,6 +73,26 @@ def resolve_bot(space: str, bot: str) -> Optional[Path]:
     return None
 
 
+def get_bot_meta(space: str, bot: str) -> Optional[dict]:
+    """
+    Get metadata for a specific bot from its space.yaml.
+
+    Returns the bot's dict from space.yaml (including 'destruct', 'description',
+    'args', 'schedule', etc.), or None if not found.
+    """
+    for spaces_dir in _all_spaces_dirs():
+        space_dir = spaces_dir / space
+        if not space_dir.is_dir():
+            continue
+
+        meta = _load_space_yaml(space_dir / "space.yaml")
+        bot_meta = meta.get("bots", {})
+        if bot in bot_meta and isinstance(bot_meta[bot], dict):
+            return bot_meta[bot]
+
+    return None
+
+
 def list_spaces() -> list[dict]:
     """
     List all available nanobot spaces with their metadata.
@@ -118,7 +138,7 @@ def list_bots(space: str) -> list[dict]:
     """
     List all bots in a given space.
 
-    Returns list of dicts with keys: name, description, path, type
+    Returns list of dicts with keys: name, description, path, type, destruct
     """
     bots = []
     seen = set()
@@ -145,6 +165,8 @@ def list_bots(space: str) -> list[dict]:
             seen.add(script.stem)
 
             bot_info = bot_meta.get(script.stem, {})
+            if not isinstance(bot_info, dict):
+                bot_info = {}
             bots.append(
                 {
                     "name": script.stem,
@@ -153,6 +175,7 @@ def list_bots(space: str) -> list[dict]:
                     "type": script.suffix[1:],
                     "args": bot_info.get("args", []),
                     "schedule": bot_info.get("schedule", ""),
+                    "destruct": bot_info.get("destruct", "off"),
                 }
             )
 
@@ -160,7 +183,7 @@ def list_bots(space: str) -> list[dict]:
 
 
 def get_bot(space: str, bot: str) -> Optional[dict]:
-    """Get metadata for a specific bot."""
+    """Get full listing info for a specific bot."""
     for b in list_bots(space):
         if b["name"] == bot:
             return b
