@@ -13,6 +13,7 @@ tags:
 bots:
   health:
     description: System health check (CPU, memory, disk, services, temps)
+    destruct: auto
     args:
       - name: services
         description: Comma-separated list of services to check

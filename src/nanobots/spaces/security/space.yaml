@@ -13,6 +13,7 @@ tags:
 bots:
   threat-radar:
     description: Scan NVD for CVEs, check CISA KEV, search arXiv security papers
+    destruct: "off"
     args:
       - name: keyword
         description: Search keyword for CVE and paper lookups

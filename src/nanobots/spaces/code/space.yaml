@@ -13,6 +13,7 @@ tags:
 bots:
   secrets:
     description: Scan files for leaked API keys, tokens, passwords, and private keys
+    destruct: "off"
     args:
       - name: path
         description: Directory or file path to scan
