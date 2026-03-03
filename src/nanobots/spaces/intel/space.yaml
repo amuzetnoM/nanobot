@@ -1,0 +1,13 @@
+# intel - Threat intelligence aggregation and analysis
+# Built-in nanobots space
+
+name: intel
+description: Threat intelligence feeds and indicator analysis
+version: "0.1.0"
+tags:
+  - threat-intel
+  - ioc
+  - feeds
+  - analysis
+
+bots: {}

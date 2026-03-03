@@ -1,0 +1,14 @@
+# recon - OSINT and infrastructure reconnaissance
+# Built-in nanobots space
+
+name: recon
+description: OSINT and infrastructure reconnaissance
+version: "0.1.0"
+tags:
+  - osint
+  - recon
+  - infrastructure
+  - dns
+  - network
+
+bots: {}

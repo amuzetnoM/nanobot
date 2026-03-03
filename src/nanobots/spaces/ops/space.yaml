@@ -1,0 +1,21 @@
+# ops - System operations and health monitoring
+# Built-in nanobots space
+
+name: ops
+description: System health monitoring and operations
+version: "0.1.0"
+tags:
+  - monitoring
+  - health
+  - devops
+  - linux
+
+bots:
+  health:
+    description: System health check (CPU, memory, disk, services, temps)
+    args:
+      - name: services
+        description: Comma-separated list of services to check
+        required: false
+        default: ""
+    schedule: "*/15 * * * *"

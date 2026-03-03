@@ -1,0 +1,24 @@
+# security - Cybersecurity scanning and threat intelligence
+# Built-in nanobots space
+
+name: security
+description: Cybersecurity scanning and vulnerability monitoring
+version: "0.1.0"
+tags:
+  - security
+  - cve
+  - vulnerabilities
+  - threat-intel
+
+bots:
+  threat-radar:
+    description: Scan NVD for CVEs, check CISA KEV, search arXiv security papers
+    args:
+      - name: keyword
+        description: Search keyword for CVE and paper lookups
+        required: true
+      - name: days
+        description: Look back N days for recent CVEs
+        required: false
+        default: "7"
+    schedule: "0 */6 * * *"

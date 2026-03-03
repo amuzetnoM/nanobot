@@ -1,0 +1,24 @@
+# code - Code quality and security analysis
+# Built-in nanobots space
+
+name: code
+description: Code quality analysis and secret scanning
+version: "0.1.0"
+tags:
+  - code
+  - secrets
+  - quality
+  - scanning
+
+bots:
+  secrets:
+    description: Scan files for leaked API keys, tokens, passwords, and private keys
+    args:
+      - name: path
+        description: Directory or file path to scan
+        required: true
+      - name: format
+        description: Output format (markdown or json)
+        required: false
+        default: "markdown"
+    schedule: ""

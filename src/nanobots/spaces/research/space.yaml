@@ -1,0 +1,14 @@
+# research - AI/ML research intelligence
+# Built-in nanobots space
+
+name: research
+description: AI/ML research paper tracking and intelligence
+version: "0.1.0"
+tags:
+  - research
+  - ai
+  - ml
+  - papers
+  - arxiv
+
+bots: {}
