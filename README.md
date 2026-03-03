@@ -184,31 +184,34 @@ AI/ML research, OSINT reconnaissance, and threat intelligence spaces. Ready for 
 
 ## How It Works
 
-```
-Caller                  nanobots                      Bot Script
- │                         │                              │
- ├── spawn("ops/health") ──┤                              │
- │                         ├── resolve bot (registry)     │
- │                         ├── set env vars               │
- │                         ├── subprocess.run() ──────────┤
- │                         │                              ├── execute
- │                         │                              ├── write report
- │                         │                              ├── exit(0)
- │                         ├── collect stdout/stderr  ◄───┤
- │                         ├── read report into memory    │
- │                         │                              │
- │                         ├── DESTRUCT DECISION          │
- │                         │   ├─ policy=off  → keep      │
- │                         │   ├─ policy=on   → delete    │
- │                         │   ├─ policy=auto → evaluate  │
- │                         │   │   ├─ <5s + exit 0 + <10KB → delete
- │                         │   │   └─ otherwise           → keep
- │                         │   ├─ full_destruct → tombstone
- │                         │   └─ report_ttl → timer thread
- │                         │                              │
- │  ◄── NanobotResult ────┤                              │
- │   .report (in memory)   │                              │
- │   .destructed = true    │                              │
+```mermaid
+sequenceDiagram
+    participant C as Caller
+    participant N as Nanobots Engine
+    participant B as Bot Script
+
+    C->>N: spawn("ops/health")
+    N->>N: Resolve bot (registry)
+    N->>N: Set env vars
+    N->>B: subprocess.run()
+    B->>B: Execute task
+    B->>B: Write report
+    B-->>N: stdout/stderr + exit(0)
+    N->>N: Read report into memory
+
+    alt policy = off
+        N->>N: Keep all files
+    else policy = on
+        N->>N: Delete bot script + report + log
+    else policy = auto
+        N->>N: Evaluate (runtime, exit code, size)
+    else full_destruct
+        N->>N: Wipe all, leave tombstone
+    else report_ttl
+        N->>N: Start timer thread for cleanup
+    end
+
+    N-->>C: NanobotResult (.report in memory, .destructed flag)
 ```
 
 Every nanobot runs in its own subprocess. No shared state. No side effects. The parent gets a clean `NanobotResult` with report content in memory regardless of what happens to the file on disk.
